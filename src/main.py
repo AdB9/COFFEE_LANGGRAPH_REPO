@@ -69,6 +69,19 @@ def main(
     graph = build_graph()
     app_graph = graph.compile()
 
+    from IPython.display import Image, display
+
+    try:
+        image_bytes = app_graph.get_graph().draw_mermaid_png()
+        
+        # Save the image to a file
+        with open("graph.png", "wb") as f:
+            f.write(image_bytes)
+        
+        display(Image(image_bytes))
+    except Exception as e:
+        print(f"Could not generate or save image: {e}")
+
     console.print(Panel.fit("[bold]Coffee LangGraph[/bold]", title="Run", border_style="green"))
 
     # Execute
