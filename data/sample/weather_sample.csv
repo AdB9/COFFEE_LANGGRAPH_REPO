@@ -1,0 +1,4 @@
+date,region,min_temp_c,precip_14d_mm,precip_14d_norm_mm,ndvi_anom
+2025-08-20,Sul de Minas,1.8,5,25,-0.22
+2025-08-20,Mogiana,3.1,10,20,-0.10
+2025-08-20,Cerrado Mineiro,2.4,8,22,-0.15
