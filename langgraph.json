@@ -3,10 +3,10 @@
     "pandas",
     "requests",
     "lxml",
-    "./src"
+    "./coffee_langgraph"
   ],
   "graphs": {
-    "coffee": "./src/graph_builder.py:build_graph"
+    "coffee": "./coffee_langgraph/graph_builder.py:build_graph"
   },
   "env": "./.env"
 }
