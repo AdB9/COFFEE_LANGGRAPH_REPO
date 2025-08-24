@@ -1,12 +1,14 @@
 {
-  "dependencies": [
-    "pandas",
-    "requests",
-    "lxml",
-    "./coffee_langgraph"
-  ],
-  "graphs": {
-    "coffee": "./coffee_langgraph/graph_builder.py:build_graph"
-  },
-  "env": "./.env"
+    "python_version": "3.11",
+    "dockerfile_lines": [
+        "RUN git config --global url.\"https://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@github.com/\".insteadOf \"https://github.com/\""
+    ],
+    "dependencies": ["."],
+    "graphs": {
+        "orchestrator_agent": "./alpha_seeker/orchestrator/graph.py:graph",
+        "websearch_agent": "./alpha_seeker/websearch_agent/graph.py:graph",
+        "geospatial_agent": "./alpha_seeker/data_extractors/geospatial/agent.py:extract_geospatial_data",
+        "web_news_agent": "./alpha_seeker/data_extractors/web_news/agent.py:extract_web_news_data"
+    },
+    "env": "./.env"
 }

@@ -1,0 +1,20 @@
+# Alpha Seeker Environment Variables
+# Copy this file to .env and fill in your actual API keys
+
+# Google Search API (optional - will fallback to DuckDuckGo if not provided)
+GOOGLE_API_KEY=your_google_api_key_here
+GOOGLE_CSE_ID=your_custom_search_engine_id_here
+
+# OpenAI API (if using OpenAI models)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Google Gemini API (if using Google Gemini models)
+GOOGLE_API_KEY=your_google_gemini_api_key_here
+
+# Other potential API keys for future expansion
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+# Search Configuration
+DEFAULT_SEARCH_ENGINE=duckduckgo  # or "google"
+MAX_SEARCH_RESULTS=10
+SEARCH_TIMEOUT=30
