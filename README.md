@@ -27,6 +27,10 @@ alpha_seeker/
 └── example_websearch.py    # Example usage script
 ```
 
+Below is the LangGraph workflow for the Coffee Commodity Analyzer:
+
+![Coffee LangGraph Flow](graphL.png)
+
 ## 🚀 Quick Start
 
 ### Prerequisites
