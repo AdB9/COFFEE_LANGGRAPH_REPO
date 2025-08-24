@@ -61,7 +61,7 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
         # Input Processing Results
         if result.get('commodity_input'):
             commodity_input = result['commodity_input']
-            print(f"\n📊 COMMODITY ANALYSIS:")
+            print("\n📊 COMMODITY ANALYSIS:")
             print(f"   • Commodity: {commodity_input.commodity.value.upper()}")
             print(f"   • Analysis Period: {commodity_input.analysis_period_days} days")
             print(f"   • Confidence Threshold: {commodity_input.confidence_threshold}")
@@ -76,11 +76,11 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
                 print(f"      └─ Key Factors: {', '.join(region.key_factors[:3])}")
         
         # Data Extraction Results
-        print(f"\n🔬 DATA EXTRACTION RESULTS:")
+        print("\n🔬 DATA EXTRACTION RESULTS:")
         
         if result.get('geospatial_results'):
             geo = result['geospatial_results']
-            print(f"   🛰️  GEOSPATIAL AGENT:")
+            print("   🛰️  GEOSPATIAL AGENT:")
             print(f"      └─ Data Points: {len(geo.data_points)}")
             print(f"      └─ Confidence: {geo.confidence_level:.2f}")
             print(f"      └─ Key Insights: {len(geo.key_insights)}")
@@ -93,7 +93,7 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
         
         if result.get('logistics_results'):
             logistics = result['logistics_results']
-            print(f"   🚛 LOGISTICS AGENT:")
+            print("   🚛 LOGISTICS AGENT:")
             print(f"      └─ Data Points: {len(logistics.data_points)}")
             print(f"      └─ Confidence: {logistics.confidence_level:.2f}")
             print(f"      └─ Key Insights: {len(logistics.key_insights)}")
@@ -104,7 +104,7 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
         
         if result.get('web_news_results'):
             news = result['web_news_results']
-            print(f"   📰 WEB NEWS AGENT:")
+            print("   📰 WEB NEWS AGENT:")
             print(f"      └─ Data Points: {len(news.data_points)}")
             print(f"      └─ Confidence: {news.confidence_level:.2f}")
             print(f"      └─ Key Insights: {len(news.key_insights)}")
@@ -131,7 +131,7 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
         # Analysis Context
         if result.get('analysis_context'):
             context = result['analysis_context']
-            print(f"\n📋 ANALYSIS CONTEXT:")
+            print("\n📋 ANALYSIS CONTEXT:")
             print(f"   • Model Errors Analyzed: {len(context.model_errors)}")
             print(f"   • Price History Records: {len(context.price_history)}")
             if context.time_window:
@@ -152,7 +152,7 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
                 print(f"   • Latest Price: ${recent_prices[0]['price']:.2f} on {recent_prices[0]['date'].strftime('%Y-%m-%d')}")
         
         # Execution Summary
-        print(f"\n📈 EXECUTION SUMMARY:")
+        print("\n📈 EXECUTION SUMMARY:")
         print(f"   • Total Messages: {len(result.get('messages', []))}")
         print(f"   • Current Agent: {result.get('current_agent', 'completed')}")
         print(f"   • Completed Agents: {', '.join(result.get('completed_agents', []))}")
@@ -168,8 +168,8 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
             huge_errors = [err for err in context.model_errors if err.is_huge_difference]
             
             if huge_errors:
-                print(f"\n📊 PREDICTION FAILURE ANALYSIS:")
-                print(f"   Top 5 Largest Prediction Errors from evaluation_results.csv:")
+                print("\n📊 PREDICTION FAILURE ANALYSIS:")
+                print("   Top 5 Largest Prediction Errors from evaluation_results.csv:")
                 
                 # Sort by absolute delta and show top 5
                 top_errors = sorted(huge_errors, key=lambda x: x.absolute_delta, reverse=True)[:5]
@@ -178,15 +178,15 @@ async def test_alpha_seeker(lookback_window_days: int = 10, k_worst_cases: int =
                     print(f"      └─ Actual: ${error.actual:.2f}, Predicted: ${error.predicted:.2f}")
                     print(f"      └─ Error: ${error.absolute_delta:.2f} ({error.percentage_error:.1f}%)")
                 
-                print(f"\n📈 DATASET.CSV PRICE CONTEXT:")
+                print("\n📈 DATASET.CSV PRICE CONTEXT:")
                 if context.price_history:
                     recent_data = context.price_history[:5]
-                    print(f"   Recent Price Data from dataset.csv:")
+                    print("   Recent Price Data from dataset.csv:")
                     for i, record in enumerate(recent_data, 1):
                         print(f"   {i}. {record['date'].strftime('%Y-%m-%d')}: ${record['price']:.2f}")
                         print(f"      └─ Range: ${record['low']:.2f} - ${record['high']:.2f}, Volume: {record['volume']}")
         
-        print(f"\n🎉 Alpha Seeker analysis complete!")
+        print("\n🎉 Alpha Seeker analysis complete!")
         print(f"📋 Analyzed {len(huge_errors) if 'huge_errors' in locals() else 0} prediction failures from evaluation_results.csv")
         print(f"📊 Used {lookback_window_days}-day lookback windows and {k_worst_cases} worst cases")
         print(f"💡 Generated {len(result.get('alpha_indicators', []))} alpha indicators to prevent future failures")

@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END, START
@@ -48,11 +48,31 @@ async def extract_web_news_data_impl(
             logger.info(f"  Window {i}: {window.start_date} to {window.end_date}")
         
         # Generate targeted search queries based on commodity, regions, and failure windows
-        # Use the first failure window for query generation (could be enhanced to use all windows)
-        first_window = failure_windows[0]
-        start_date = datetime.combine(first_window.start_date, datetime.min.time())
-        end_date = datetime.combine(first_window.end_date, datetime.min.time())
-        search_queries = _generate_commodity_queries(commodity, regions, start_date, end_date)
+        # Use all failure windows to generate comprehensive queries
+        all_search_queries = []
+        
+        for i, window in enumerate(failure_windows):
+            start_date = datetime.combine(window.start_date, datetime.min.time())
+            end_date = datetime.combine(window.end_date, datetime.min.time())
+            
+            # Generate window-specific queries
+            window_queries = _generate_commodity_queries(commodity, regions, start_date, end_date)
+            
+            # Add window context to distinguish queries
+            window_queries = [f"{query}" for query in window_queries]
+            
+            # For the first window, include more general queries
+            if i == 0:
+                all_search_queries.extend(window_queries)
+            else:
+                # For subsequent windows, focus on time-specific queries to avoid duplicates
+                time_specific_queries = [q for q in window_queries if any(month in q for month in 
+                    ['January', 'February', 'March', 'April', 'May', 'June', 
+                     'July', 'August', 'September', 'October', 'November', 'December'])]
+                all_search_queries.extend(time_specific_queries[:5])  # Limit to avoid too many queries
+        
+        # Remove duplicates while preserving order
+        search_queries = list(dict.fromkeys(all_search_queries))
         
         logger.info(f"Generated {len(search_queries)} search queries")
         for query in search_queries:
@@ -115,40 +135,58 @@ def _generate_commodity_queries(
     regions: List[RegionInfo], 
     start_date: datetime, 
     end_date: datetime,
-    failure_context: str = None
+    failure_context: str | None = None
 ) -> List[str]:
-    """Generate targeted search queries for the commodity and regions."""
+    """Generate targeted search queries for the commodity and regions with specific time focus."""
     
     queries = []
     commodity_name = commodity.value
     
-    # General commodity queries
+    # Extract time information for targeted queries
+    year = start_date.year
+    month_year = start_date.strftime('%B %Y')
+    start_month = start_date.strftime('%B')
+    end_month = end_date.strftime('%B')
+    date_range = f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+    
+    # Time-specific commodity queries (most important for failure windows)
+    queries.extend([
+        f"{commodity_name} price volatility {month_year}",
+        f"{commodity_name} market news {start_month} {year}",
+        f"{commodity_name} price surge {month_year}",
+        f"{commodity_name} market disruption {start_month} {end_month} {year}",
+        f"{commodity_name} supply shock {month_year}",
+        f"{commodity_name} trading alert {start_month} {year}"
+    ])
+    
+    # General commodity queries (with time context)
     queries.extend([
         f"{commodity_name} price volatility market analysis",
         f"{commodity_name} supply chain disruption news",
-        f"{commodity_name} market forecast industry report",
+        f"{commodity_name} market forecast industry report", 
         f"{commodity_name} trade policy government announcement"
     ])
     
-    # Region-specific queries
+    # Region-specific queries with time focus
     for region in regions[:3]:  # Limit to top 3 regions to avoid too many queries
         region_name = region.region_name
-        country = region.country
+        country = getattr(region, 'country', 'Unknown')
         
         queries.extend([
-            f"{commodity_name} production {region_name} {country} news",
-            f"{country} {commodity_name} export policy trade",
-            f"{region_name} weather impact {commodity_name} harvest"
+            f"{commodity_name} production {region_name} news {month_year}",
+            f"{country} {commodity_name} export {start_month} {year}",
+            f"{region_name} weather impact {commodity_name} {month_year}",
+            f"{commodity_name} harvest {region_name} {start_month} {end_month} {year}"
         ])
     
-    # Time-sensitive queries
-    year = start_date.year
-    month_year = start_date.strftime('%B %Y')
+    # Market event queries for the specific timeframe
     queries.extend([
         f"{commodity_name} market outlook {year}",
-        f"{commodity_name} price prediction {year} forecast",
+        f"{commodity_name} price prediction {year} forecast", 
         f"{commodity_name} volatility {month_year}",
-        f"{commodity_name} price shock {year}"
+        f"{commodity_name} price shock {year}",
+        f"{commodity_name} futures {month_year}",
+        f"{commodity_name} spot price {start_month} {year}"
     ])
     
     # Add specific date-based queries if we have failure context
@@ -158,11 +196,22 @@ def _generate_commodity_queries(
         dates = re.findall(r'\d{4}-\d{2}-\d{2}', failure_context)
         for date in dates[:2]:  # Focus on first 2 failure dates
             date_obj = datetime.strptime(date, '%Y-%m-%d')
-            month_year = date_obj.strftime('%B %Y')
+            specific_month_year = date_obj.strftime('%B %Y')
+            specific_date = date_obj.strftime('%Y-%m-%d')
             queries.extend([
-                f"{commodity_name} news {month_year}",
-                f"{commodity_name} market disruption {month_year}"
+                f"{commodity_name} news {specific_month_year}",
+                f"{commodity_name} market disruption {specific_month_year}",
+                f"{commodity_name} price movement {specific_date}",
+                f"{commodity_name} market event {specific_month_year}"
             ])
+    
+    # Add urgent/breaking news style queries for recent periods
+    if (datetime.now() - start_date).days < 180:  # If within last 6 months
+        queries.extend([
+            f"{commodity_name} breaking news {month_year}",
+            f"{commodity_name} market alert {month_year}",
+            f"{commodity_name} price warning {start_month} {year}"
+        ])
     
     return queries
 
@@ -270,14 +319,22 @@ def extract_web_news_data(config: RunnableConfig):
                     region_type="state"
                 )
             ]
-            time_window_start = datetime.now() - timedelta(days=30)
-            time_window_end = datetime.now()
+            # Create test failure windows
+            failure_windows = [
+                type('FailureWindow', (), {
+                    'start_date': (datetime.now() - timedelta(days=30)).date(),
+                    'end_date': (datetime.now() - timedelta(days=16)).date()
+                })(),
+                type('FailureWindow', (), {
+                    'start_date': (datetime.now() - timedelta(days=15)).date(),
+                    'end_date': datetime.now().date()
+                })()
+            ]
             
             result = await extract_web_news_data_impl(
                 commodity=commodity,
                 regions=regions,
-                time_window_start=time_window_start,
-                time_window_end=time_window_end
+                failure_windows=failure_windows
             )
             
             return {"result": result}

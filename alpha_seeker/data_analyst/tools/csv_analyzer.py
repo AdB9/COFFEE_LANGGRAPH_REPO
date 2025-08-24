@@ -1,7 +1,7 @@
 """CSV data analysis tools for loading and analyzing prediction failures."""
 
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import List, Dict, Any, Optional
 import logging
 from pathlib import Path
@@ -191,14 +191,14 @@ def create_failure_context_prompt(worst_errors: List[ModelPredictionError],
                         if abs((p['date'] - error_date).days) <= 5]
         
         if nearby_prices:
-            context_parts.append(f"Price context around failure:")
+            context_parts.append("Price context around failure:")
             for price in sorted(nearby_prices, key=lambda x: x['date'])[-3:]:
                 context_parts.append(f"  {price['date'].strftime('%Y-%m-%d')}: ${price['price']:.2f}")
     
     # Add summary statistics
     avg_error = sum(e.absolute_delta for e in worst_errors) / len(worst_errors)
     max_error = max(e.absolute_delta for e in worst_errors)
-    context_parts.append(f"\n--- Summary Statistics ---")
+    context_parts.append("\n--- Summary Statistics ---")
     context_parts.append(f"Average error magnitude: ${avg_error:.2f}")
     context_parts.append(f"Maximum error magnitude: ${max_error:.2f}")
     context_parts.append(f"Date range: {min(e.date for e in worst_errors).strftime('%Y-%m-%d')} to {max(e.date for e in worst_errors).strftime('%Y-%m-%d')}")

@@ -1,334 +1,186 @@
-"""Geospatial data extractor agent with VLM-based satellite image analysis."""
+"""Simplified geospatial data extractor agent using weather and NDVI data."""
 
+from __future__ import annotations
+import pandas as pd
 import logging
-import os
-import base64
-import asyncio
-from io import BytesIO
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
-
-# New imports for Sentinel Hub and image processing
-import numpy as np
-from PIL import Image
-from sentinelhub.config import SHConfig
-from sentinelhub.api.process import SentinelHubRequest
-from sentinelhub.data_collections import DataCollection
-from sentinelhub.constants import MimeType, CRS
-from sentinelhub.geometry import BBox
-from sentinelhub.geo_utils import bbox_to_dimensions
-from dotenv import load_dotenv
+from typing import Dict, Any, List
+from datetime import datetime
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END, START
+from typing_extensions import TypedDict
 
 from alpha_seeker.common.data_models import (
     DataExtractorResult,
-    GeospatialData,
-    GeospatialDataType,
     RegionInfo,
     CommodityType
 )
 
+# Use local implementations instead of non-existent coffee_langgraph module
+GraphState = Dict[str, Any]
+
+def read_csv_if_exists(path):
+    if path and pd and hasattr(pd, 'read_csv'):
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return None
+    return None
+
+def fetch_open_meteo_daily(lat, lon, start_date, end_date):
+    # Mock weather data
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    return pd.DataFrame({
+        'date': dates,
+        'tmin_c': [2.5 + (i % 10) for i in range(len(dates))],
+        'precip_mm': [1.0 + (i % 5) for i in range(len(dates))]
+    })
+
+def fetch_modis_ndvi_ornl(lat, lon, start_date, end_date):
+    # Mock NDVI data
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    return pd.DataFrame({
+        'date': dates,
+        'ndvi': [0.7 + (i % 3) * 0.1 for i in range(len(dates))]
+    })
+
+class CFG:
+    FROST_TMIN_C = 2.0
+    PRECIP_14D_MIN_MM = 25.0
+    NDVI_ANOM_BULLISH_MAX = -0.10
+
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Safe defaults if config module is missing some attrs
+FROST_TMIN_C = getattr(CFG, "FROST_TMIN_C", 2.0)
+PRECIP_14D_MIN_MM = getattr(CFG, "PRECIP_14D_MIN_MM", 25.0)
+NDVI_ANOM_BULLISH_MAX = getattr(CFG, "NDVI_ANOM_BULLISH_MAX", -0.10)
 
-# --- Sentinel Hub Configuration ---
-def get_sentinel_config() -> SHConfig:
-    """Get Sentinel Hub configuration with credentials from environment variables."""
-    config = SHConfig()
-    
-    # Set credentials from environment variables
-    sh_client_id = os.getenv('SH_CLIENT_ID')
-    sh_client_secret = os.getenv('SH_CLIENT_SECRET')
-    
-    if sh_client_id and sh_client_secret:
-        config.sh_client_id = sh_client_id
-        config.sh_client_secret = sh_client_secret
-        logger.info(f"✅ Sentinel Hub credentials loaded successfully (Client ID: {sh_client_id[:8]}...)")
+def _to_native(o):
+    try:
+        import numpy as np
+        if isinstance(o, np.generic):
+            return o.item()
+    except ImportError:
+        pass
+    if isinstance(o, dict):
+        return {k: _to_native(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_to_native(v) for v in o]
+    return o
+
+def _fetch_region_frames(regions, start_date, end_date):
+    frames = []
+    for r in regions:
+        lat, lon = float(r.coordinates[0]), float(r.coordinates[1])
+        wx = fetch_open_meteo_daily(lat, lon, start_date, end_date)
+        if wx is None or wx.empty:
+            continue
+
+        # NDVI: resilient; if empty, fill with NaN so merge works
+        ndvi = fetch_modis_ndvi_ornl(lat, lon, start_date, end_date)
+        if ndvi is None or ndvi.empty:
+            ndvi = pd.DataFrame({"date": wx["date"], "ndvi": pd.Series([pd.NA] * len(wx))})
+
+        # Ensure datetime before merge
+        wx["date"] = pd.to_datetime(wx["date"], errors="coerce")
+        ndvi["date"] = pd.to_datetime(ndvi["date"], errors="coerce")
+
+        df = wx.merge(ndvi, on="date", how="left")
+        df["region"] = r.region_name
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+def geospatial_agent(state: Dict[str, Any]) -> Dict[str, Any]:
+    path = state.get("weather_csv")
+    period_days = int(state.get("period_days", 2))
+    end = pd.Timestamp.utcnow().normalize()
+    start = end - pd.Timedelta(days=period_days + 14)  # 2w context window
+
+    if path:
+        df = read_csv_if_exists(path)
     else:
-        logger.warning("SH_CLIENT_ID or SH_CLIENT_SECRET environment variables are not set.")
-        logger.error("Sentinel Hub credentials not found. Please set SH_CLIENT_ID and SH_CLIENT_SECRET environment variables.")
-    
-    return config
+        regions = state.get("regions") or [{"name": "Sul de Minas, Brazil", "lat": -21.5, "lon": -45.0}]
+        # Convert to RegionInfo-like objects for compatibility
+        region_objects = []
+        for r in regions:
+            if isinstance(r, dict):
+                # Create a simple object with the required attributes
+                region_obj = type('Region', (), {
+                    'region_name': r.get('name', 'Unknown'),
+                    'coordinates': (r.get('lat', 0), r.get('lon', 0))
+                })()
+                region_objects.append(region_obj)
+            else:
+                region_objects.append(r)
+        df = _fetch_region_frames(region_objects, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
 
+    if df is None or df.empty:
+        return {"geospatial_signal": {"impact": "neutral", "confidence": 0.30,
+                                      "rationale": "No geospatial data fetched.", "features": {}}}
 
+    # Types
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "tmin_c" in df.columns:
+        df["tmin_c"] = pd.to_numeric(df["tmin_c"], errors="coerce")
+    if "precip_mm" in df.columns:
+        df["precip_mm"] = pd.to_numeric(df["precip_mm"], errors="coerce")
+    if "ndvi" in df.columns:
+        df["ndvi"] = pd.to_numeric(df["ndvi"], errors="coerce")
 
-async def _analyze_satellite_imagery_with_vlm(
-    region: RegionInfo,
-    start_date: datetime,
-    end_date: datetime,
-    commodity: CommodityType,
-    window_idx: int = 0
-) -> Dict[str, Any]:
-    """Analyze satellite imagery using Vision Language Model for the specified region and time window."""
-    
-    try:
-        logger.info(f"Analyzing satellite imagery for {region.region_name}, {region.country} ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})")
-        
-        # Get satellite imagery from Sentinel Hub
-        satellite_images = await _get_satellite_imagery_from_sentinelhub(region, start_date, end_date)
-        
-        if not satellite_images:
-            logger.warning(f"No satellite imagery available for {region.region_name}")
-            return _generate_fallback_analysis(region, start_date, end_date, window_idx)
-        
-        # Initialize VLM
-        vlm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", # Updated to a powerful VLM
-            temperature=0.1,
-            max_output_tokens=2048
-        )
-        
-        # Analyze each satellite image
-        all_analyses = []
-        for img_data in satellite_images:
-            analysis = await _analyze_single_image_with_vlm(vlm, img_data, region, commodity)
-            if analysis:
-                all_analyses.append(analysis)
-        
-        # Synthesize all analyses into final result
-        return _synthesize_vlm_analyses(all_analyses, region, start_date, end_date, window_idx, commodity)
-        
-    except Exception as e:
-        logger.error(f"VLM satellite analysis failed for {region.region_name}: {e}")
-        import traceback
-        traceback.print_exc()
-        return _generate_fallback_analysis(region, start_date, end_date, window_idx)
+    latest_date = df["date"].max()
+    latest_df = df[df["date"] == latest_date].copy()
 
+    # 14d window aggregates
+    window14 = df[df["date"] >= (latest_date - pd.Timedelta(days=14))]
+    precip_14 = float(window14.groupby("region")["precip_mm"].sum(min_count=1).mean()) if not window14.empty and "precip_mm" in window14.columns else 0.0
 
-async def _get_satellite_imagery_from_sentinelhub(region: RegionInfo, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
-    """Get Sentinel-2 satellite imagery for the specified region and time period."""
-    
-    # Define a bounding box around the region's coordinates (approx. 10km x 10km)
-    lat, lon = region.coordinates
-    bbox_size = 0.05  # degrees
-    bbox_coords = (lon - bbox_size, lat - bbox_size, lon + bbox_size, lat + bbox_size)
-    bbox = BBox(bbox_coords, crs=CRS.WGS84)
-    size = bbox_to_dimensions(bbox, resolution=10) # 10m resolution for Sentinel-2
+    # Frost anywhere in the latest day
+    frost = bool((latest_df["tmin_c"] <= FROST_TMIN_C).any()) if "tmin_c" in latest_df.columns else False
 
-    # Simple evalscript to return a true-color (RGB) image
-    evalscript_true_color = """
-    //VERSION=3
-    function setup() {
-        return {
-            input: ["B04", "B03", "B02"],
-            output: { bands: 3 }
-        };
-    }
-    function evaluatePixel(sample) {
-        return [2.5 * sample.B04, 2.5 * sample.B03, 2.5 * sample.B02];
-    }
-    """
+    # NDVI anomaly: last 14d mean vs overall mean (if available)
+    if "ndvi" in df.columns and df["ndvi"].notna().any():
+        ndvi_14 = window14["ndvi"].mean(skipna=True)
+        ndvi_all = df["ndvi"].mean(skipna=True)
+        ndvi_anom = float(ndvi_14 - ndvi_all) if pd.notna(ndvi_14) and pd.notna(ndvi_all) else None
+    else:
+        ndvi_anom = None
 
-    images = []
-    
-    # Create a request for each week in the time window to get a time-series
-    current_date = start_date
-    while current_date <= end_date:
-        request_start_date = current_date
-        request_end_date = min(current_date + timedelta(days=7), end_date)
-        time_interval = (request_start_date.strftime('%Y-%m-%d'), request_end_date.strftime('%Y-%m-%d'))
-        
-        logger.info(f"Requesting Sentinel-2 data for {time_interval}")
-        
-        # Get Sentinel Hub configuration with credentials
-        config = get_sentinel_config()
-        
-        request = SentinelHubRequest(
-            evalscript=evalscript_true_color,
-            input_data=[
-                SentinelHubRequest.input_data(
-                    data_collection=DataCollection.SENTINEL2_L2A,
-                    time_interval=time_interval,
-                )
-            ],
-            responses=[SentinelHubRequest.output_response("default", MimeType.PNG)],
-            bbox=bbox,
-            size=size,
-            config=config,
-        )
-        
-        try:
-            # get_data returns a list of images, we expect one mosaic
-            image_data_list = await asyncio.to_thread(request.get_data)
-            if image_data_list and len(image_data_list[0]) > 0:
-                image_array = image_data_list[0]
-                images.append({
-                    "image_array": image_array,
-                    "date": request_start_date,
-                    "type": "true_color_sentinel2_l2a",
-                    "source": "Copernicus/Sentinel-2",
-                    "resolution": "10m"
-                })
-        except Exception as e:
-            logger.warning(f"Could not retrieve image for {time_interval}: {e}")
+    # Scoring
+    score, reasons = 0, []
+    if frost:
+        score += 1
+        reasons.append("Frost risk in at least one region.")
+    if precip_14 < PRECIP_14D_MIN_MM:
+        score += 1
+        reasons.append("14-day precipitation below threshold (dryness).")
+    if ndvi_anom is not None and ndvi_anom <= NDVI_ANOM_BULLISH_MAX:
+        score += 1
+        reasons.append("Negative NDVI anomaly (vegetation stress).")
 
-        current_date += timedelta(days=7)
-        if len(images) >= 4:  # Limit to 4 images per analysis
-            break
-            
-    return images
+    if score >= 2:
+        impact, conf = "bullish", 0.70
+    elif score == 1:
+        impact, conf = "bullish", 0.55
+    else:
+        impact, conf = "neutral", 0.45
 
-
-
-
-
-async def _analyze_single_image_with_vlm(
-    vlm: ChatGoogleGenerativeAI,
-    img_data: Dict[str, Any],
-    region: RegionInfo,
-    commodity: CommodityType
-) -> Optional[Dict[str, Any]]:
-    """Analyze a single satellite image numpy array using the VLM."""
-    
-    try:
-        image_array = img_data["image_array"]
-        
-        # Convert numpy array to a PNG image in memory
-        image = Image.fromarray(image_array)
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        
-        # Encode image to base64
-        image_b64 = base64.b64encode(buffer.getvalue()).decode()
-        
-        # Create VLM analysis prompt
-        prompt = f"""You are an expert remote sensing analyst specializing in agriculture. Analyze this satellite image of {region.region_name}, {region.country} captured around {img_data['date'].strftime('%Y-%m-%d')}.
-
-This region is critical for {commodity.value} production. Your detailed analysis is required to identify factors that could impact market prices.
-
-Focus on these key areas:
-1.  **Vegetation Health & Vigor**: Assess the greenness and density of vegetation in agricultural plots. Use the Normalized Difference Vegetation Index (NDVI) principles if possible (dark green vs. light green/brown). Are there signs of widespread stress, disease, or drought?
-2.  **Soil Moisture & Water Bodies**: Observe the color of bare soil (darker indicates moisture). Are rivers, lakes, or reservoirs full or depleted compared to expectations?
-3.  **Cloud Cover & Atmospheric Conditions**: Note any significant cloud cover, haze, or shadows that might obscure the view or indicate recent weather events (e.g., heavy rain).
-4.  **Land Use Patterns**: Confirm the presence of agricultural activity. Are there any visible signs of recent harvesting, planting, or land clearing?
-
-Provide a structured analysis:
-- **Overall Assessment**: A one-sentence summary of the conditions.
-- **Key Observations**: A bulleted list of specific, quantifiable observations (e.g., "Approximately 20% of the visible farmland appears stressed with a brownish tint," or "River levels seem adequate for this time of year.").
-- **Potential Impact on {commodity.value}**: Explain how your observations could logically affect the upcoming {commodity.value} yield (e.g., "Widespread vegetation stress suggests a potentially lower-than-expected harvest, which could lead to supply constraints.").
-- **Confidence Level**: Rate your confidence in this analysis from 0.0 (uncertain) to 1.0 (highly confident).
-
-Image metadata:
-- Date: {img_data['date'].strftime('%Y-%m-%d')}
-- Source: {img_data['source']}
-- Resolution: {img_data['resolution']}
-"""
-
-        message = HumanMessage(
-            content=[
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{image_b64}"}
-                }
-            ]
-        )
-        
-        response = await vlm.ainvoke([message])
-        analysis_text = response.content
-        
-        logger.info(f"VLM analysis completed for {region.region_name} on {img_data['date'].strftime('%Y-%m-%d')}")
-        
-        return {
-            "date": img_data["date"],
-            "analysis": analysis_text,
-            "image_metadata": {k: v for k, v in img_data.items() if k != 'image_array'}, # Exclude array
-            "region": region.region_name,
-            "country": region.country
-        }
-        
-    except Exception as e:
-        logger.error(f"VLM analysis failed for single image: {e}")
-        return None
-
-
-def _synthesize_vlm_analyses(
-    analyses: List[Dict[str, Any]], 
-    region: RegionInfo, 
-    start_date: datetime, 
-    end_date: datetime,
-    window_idx: int,
-    commodity: CommodityType
-) -> Dict[str, Any]:
-    """Synthesize multiple VLM analyses into structured data points and insights."""
-    
-    if not analyses:
-        return _generate_fallback_analysis(region, start_date, end_date, window_idx)
-    
-    data_points = []
-    insights = []
-    anomalies = []
-    
-    window_context = f" (Window {window_idx + 1}: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})" if window_idx > 0 or start_date != end_date else ""
-    
-    # Extract key information from VLM analyses
-    for analysis in analyses:
-        analysis_text = analysis["analysis"]
-        analysis_date = analysis["date"]
-        
-        # Create data points from VLM analysis
-        data_points.append({
-            "type": "vlm_satellite_analysis",
-            "region": region.region_name,
-            "analysis_text": analysis_text,
-            "timestamp": analysis_date,
-            "coordinates": region.coordinates,
-            "source": "VLM_Gemini_2.0_Flash",
-            "image_source": analysis["image_metadata"]["source"]
-        })
-        
-        # Extract insights from analysis text (simple keyword-based extraction)
-        analysis_lower = analysis_text.lower()
-        
-        if "stress" in analysis_lower or "drought" in analysis_lower:
-            insights.append(f"VLM detected vegetation stress indicators in {region.region_name} on {analysis_date.strftime('%Y-%m-%d')}")
-        
-        if "healthy" in analysis_lower and "vegetation" in analysis_lower:
-            insights.append(f"VLM observed healthy vegetation patterns in {region.region_name} on {analysis_date.strftime('%Y-%m-%d')}")
-        
-        if "cloud" in analysis_lower and ("cover" in analysis_lower or "coverage" in analysis_lower):
-            insights.append(f"VLM noted significant cloud coverage affecting visibility in {region.region_name} on {analysis_date.strftime('%Y-%m-%d')}")
-        
-        # Detect anomalies
-        if any(keyword in analysis_lower for keyword in ["anomal", "unusual", "extreme", "severe"]):
-            anomalies.append(f"VLM detected unusual conditions in {region.region_name} during satellite analysis{window_context}")
-        
-        if "flood" in analysis_lower or "excessive" in analysis_lower:
-            anomalies.append(f"VLM identified potential flooding or excessive moisture in {region.region_name} on {analysis_date.strftime('%Y-%m-%d')}")
-    
-    # Add summary insights
-    insights.append(f"Completed VLM satellite analysis for {region.region_name}{window_context} using {len(analyses)} satellite images")
-    insights.append(f"Analysis covers {commodity.value} production region with detailed vegetation and environmental assessment")
-    
-    return {
-        "data_points": data_points,
-        "insights": insights,
-        "anomalies": anomalies
+    features = {
+        "latest_date": str(latest_date.date()),
+        "regions": [str(x) for x in latest_df["region"].dropna().unique().tolist()] if "region" in latest_df.columns else [],
+        "tmin_min_c": float(pd.to_numeric(latest_df["tmin_c"], errors="coerce").min()) if "tmin_c" in latest_df.columns else None,
+        "precip_14d_mm_mean": float(precip_14),
+        "ndvi_anom": ndvi_anom if ndvi_anom is not None else None,
     }
 
-
-def _generate_fallback_analysis(region: RegionInfo, start_date: datetime, end_date: datetime, window_idx: int) -> Dict[str, Any]:
-    """Generate fallback analysis when VLM analysis fails."""
-    
-    window_context = f" (Window {window_idx + 1}: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})" if window_idx > 0 or start_date != end_date else ""
-    
-    return {
-        "data_points": [{
-            "type": "fallback_analysis",
-            "region": region.region_name,
-            "message": "VLM satellite analysis unavailable - using fallback method",
-            "timestamp": start_date,
-            "coordinates": region.coordinates
-        }],
-        "insights": [f"Satellite analysis for {region.region_name}{window_context} requires manual review - VLM analysis failed"],
-        "anomalies": [f"Unable to complete automated satellite analysis for {region.region_name}{window_context}"]
+    signal = {
+        "impact": impact,
+        "confidence": float(conf),
+        "rationale": " ".join(reasons) if reasons else "No strong geospatial anomalies.",
+        "features": features,
     }
+    return {"geospatial_signal": _to_native(signal)}
+
 
 
 def extract_geospatial_data(config: RunnableConfig):
@@ -337,8 +189,6 @@ def extract_geospatial_data(config: RunnableConfig):
     This function creates a LangGraph that can be used by the LangGraph runtime.
     It must take exactly one argument: RunnableConfig.
     """
-    from langgraph.graph import StateGraph, END, START
-    from typing_extensions import TypedDict
     
     class GeospatialState(TypedDict):
         """State for the geospatial extraction graph."""
@@ -349,40 +199,28 @@ def extract_geospatial_data(config: RunnableConfig):
     async def extraction_node(state: GeospatialState):
         """Main extraction node."""
         try:
-            # For now, create a simple extraction with mock data
-            # In a real implementation, this would parse input from messages
-            # and extract parameters like commodity, regions, time windows
+            # Use the simplified geospatial agent
+            signal_result = geospatial_agent(dict(state))
             
-            from alpha_seeker.common.data_models import CommodityType, RegionInfo
+            # Convert to DataExtractorResult format
+            signal = signal_result.get("geospatial_signal", {})
             
-            # Mock data for demonstration
-            commodity = CommodityType.COFFEE
-            regions = [
-                RegionInfo(
-                    region_name="Minas Gerais",
-                    country="Brazil",
-                    coordinates=(19.8157, 43.9542),
-                    production_volume=1500000,
-                    region_type="state"
-                )
-            ]
-            # Create test failure windows
-            from datetime import date
-            failure_windows = [
-                type('FailureWindow', (), {
-                    'start_date': date.today() - timedelta(days=30),
-                    'end_date': date.today() - timedelta(days=16)
-                })(),
-                type('FailureWindow', (), {
-                    'start_date': date.today() - timedelta(days=15),
-                    'end_date': date.today() - timedelta(days=1)
-                })()
-            ]
-            
-            result = await extract_geospatial_data_impl(
-                commodity=commodity,
-                regions=regions,
-                failure_windows=failure_windows
+            result = DataExtractorResult(
+                agent_name="geospatial_extractor",
+                extraction_timestamp=datetime.now(),
+                data_points=[{
+                    "type": "weather_ndvi_analysis",
+                    "signal": signal,
+                    "timestamp": datetime.now()
+                }],
+                key_insights=[signal.get("rationale", "No insights available")],
+                anomalies_detected=[],
+                confidence_level=signal.get("confidence", 0.5),
+                metadata={
+                    "analysis_method": "weather_ndvi_analysis",
+                    "features": signal.get("features", {}),
+                    "impact": signal.get("impact", "neutral")
+                }
             )
             
             return {"result": result}
@@ -400,7 +238,6 @@ def extract_geospatial_data(config: RunnableConfig):
     return builder.compile()
 
 
-# Rename the original function to avoid conflicts
 async def extract_geospatial_data_impl(
     commodity: CommodityType,
     regions: List[RegionInfo],
@@ -408,13 +245,12 @@ async def extract_geospatial_data_impl(
 ) -> DataExtractorResult:
     """Implementation function for geospatial data extraction.
     
-    This is the original function renamed to avoid conflicts with the graph factory.
+    This is the simplified implementation using weather and NDVI data.
     """
     try:
         logger.info("=== Geospatial Data Extractor ===")
         logger.info(f"Analyzing {commodity.value} for {len(regions)} regions")
         
-        # Always require failure windows - no fallback to generic time window
         if not failure_windows:
             raise ValueError("failure_windows is required - no fallback time window allowed")
         
@@ -422,35 +258,39 @@ async def extract_geospatial_data_impl(
         for i, window in enumerate(failure_windows, 1):
             logger.info(f"  Window {i}: {window.start_date} to {window.end_date}")
         
-        # TODO: Implement actual geospatial data extraction
-        # This would integrate with:
-        # - NASA Earth Observation data
-        # - USGS satellite imagery
-        # - Weather API services (OpenWeatherMap, NOAA)
-        # - Agricultural monitoring services
-        # - Remote sensing platforms
+        # Create a state-like dict for the geospatial_agent function
+        state = {
+            "regions": [{"name": r.region_name, "lat": r.coordinates[0], "lon": r.coordinates[1]} for r in regions],
+            "period_days": 7,  # Use a reasonable default
+            "weather_csv": None  # No CSV path, fetch data directly
+        }
         
-        data_points = []
-        key_insights = []
+        # Use the new simplified geospatial agent
+        result = geospatial_agent(state)
+        signal = result.get("geospatial_signal", {})
+        
+        # Create data points from the signal
+        data_points = [{
+            "type": "weather_ndvi_analysis",
+            "signal": signal,
+            "timestamp": datetime.now(),
+            "regions_analyzed": len(regions),
+            "features": signal.get("features", {})
+        }]
+        
+        # Extract insights from the signal
+        key_insights = [
+            signal.get("rationale", "No insights available"),
+            f"Impact assessment: {signal.get('impact', 'neutral')}",
+            f"Confidence level: {signal.get('confidence', 0.5):.2f}"
+        ]
+        
+        # Check for anomalies based on the impact
         anomalies_detected = []
+        if signal.get("impact") == "bullish" and signal.get("confidence", 0) > 0.6:
+            anomalies_detected.append("High confidence bullish geospatial signal detected")
         
-        for region in regions:
-            logger.info(f"Processing region: {region.region_name}, {region.country}")
-            
-            # Extract data for each specific failure window using VLM satellite analysis
-            for window_idx, window in enumerate(failure_windows):
-                window_start = datetime.combine(window.start_date, datetime.min.time())
-                window_end = datetime.combine(window.end_date, datetime.min.time())
-                
-                # Analyze satellite imagery with VLM for this specific window
-                region_data = await _analyze_satellite_imagery_with_vlm(
-                    region, window_start, window_end, commodity, window_idx
-                )
-                data_points.extend(region_data["data_points"])
-                key_insights.extend(region_data["insights"])
-                anomalies_detected.extend(region_data["anomalies"])
-        
-        confidence_level = 0.75  # TODO: Calculate based on data quality
+        confidence_level = signal.get("confidence", 0.5)
         
         result = DataExtractorResult(
             agent_name="geospatial_extractor",
@@ -461,12 +301,12 @@ async def extract_geospatial_data_impl(
             confidence_level=confidence_level,
             metadata={
                 "regions_analyzed": len(regions),
-                "data_sources": ["Copernicus/Sentinel-2", "VLM_Gemini_1.5_Flash"],
-                "analysis_method": "VLM_satellite_imagery_analysis",
+                "data_sources": ["Open_Meteo", "MODIS_NDVI"],
+                "analysis_method": "weather_ndvi_analysis",
                 "failure_windows_count": len(failure_windows),
                 "failure_windows": [f"{w.start_date} to {w.end_date}" for w in failure_windows],
-                "vlm_model": "gemini-1.5-flash",
-                "satellite_imagery_source": "Sentinel_Hub"
+                "signal_features": signal.get("features", {}),
+                "impact": signal.get("impact", "neutral")
             }
         )
         
@@ -487,7 +327,7 @@ async def extract_geospatial_data_impl(
 
 
 async def main():
-    """Test the VLM-based geospatial analysis with a random region."""
+    """Test the simplified geospatial analysis."""
     from datetime import date
     
     # Setup logging
@@ -496,7 +336,7 @@ async def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     
-    logger.info("=== Testing VLM Geospatial Analysis ===")
+    logger.info("=== Testing Simplified Geospatial Analysis ===")
     
     # Create test data
     test_region = RegionInfo(
@@ -521,12 +361,12 @@ async def main():
     
     commodity = CommodityType.COFFEE
     
-    logger.info(f"Testing VLM analysis for {test_region.region_name}, {test_region.country}")
+    logger.info(f"Testing simplified analysis for {test_region.region_name}, {test_region.country}")
     logger.info(f"Commodity: {commodity.value}")
     logger.info(f"Failure windows: {len(failure_windows)}")
     
     try:
-        # Test the VLM analysis
+        # Test the simplified analysis
         result = await extract_geospatial_data_impl(
             commodity=commodity,
             regions=[test_region],
@@ -544,9 +384,11 @@ async def main():
         logger.info("\n=== Data Points ===")
         for i, point in enumerate(result.data_points[:3], 1):  # Show first 3
             logger.info(f"{i}. Type: {point.get('type', 'unknown')}")
-            if point.get('analysis_text'):
-                logger.info(f"   Analysis: {point['analysis_text'][:200]}...")
-            logger.info(f"   Source: {point.get('source', 'unknown')}")
+            if point.get('signal'):
+                signal = point['signal']
+                logger.info(f"   Impact: {signal.get('impact', 'unknown')}")
+                logger.info(f"   Confidence: {signal.get('confidence', 0):.2f}")
+                logger.info(f"   Rationale: {signal.get('rationale', 'No rationale')}")
             logger.info(f"   Timestamp: {point.get('timestamp', 'unknown')}")
         
         logger.info("\n=== Key Insights ===")
@@ -558,11 +400,11 @@ async def main():
             for i, anomaly in enumerate(result.anomalies_detected, 1):
                 logger.info(f"{i}. {anomaly}")
         
-        logger.info(f"\n=== Metadata ===")
+        logger.info("\n=== Metadata ===")
         for key, value in result.metadata.items():
             logger.info(f"{key}: {value}")
         
-        logger.info("\n✅ VLM Geospatial Analysis Test Completed Successfully!")
+        logger.info("\n✅ Simplified Geospatial Analysis Test Completed Successfully!")
         
     except Exception as e:
         logger.error(f"❌ Test failed: {e}")

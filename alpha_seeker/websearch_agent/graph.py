@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from alpha_seeker.websearch_agent.configuration import Configuration
+# from alpha_seeker.websearch_agent.configuration import Configuration  # Not used with current StateGraph setup
 from alpha_seeker.websearch_agent.nodes.query_generator import query_generator
 from alpha_seeker.websearch_agent.nodes.search_executor import search_executor
 from alpha_seeker.websearch_agent.nodes.result_analyzer import result_analyzer
@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Build the graph
-builder = StateGraph(WebSearchState, config_schema=Configuration)
+builder = StateGraph(WebSearchState)
 
 # Add the nodes to the graph
 builder.add_node("query_generator", query_generator)

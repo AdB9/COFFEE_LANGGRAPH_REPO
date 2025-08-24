@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -245,7 +245,6 @@ def _get_fallback_regions(commodity: CommodityType) -> List[RegionInfo]:
 
 async def main():
     """Example of running the region_selector node with coffee input."""
-    import asyncio
     from langchain_core.runnables import RunnableConfig
     
     # Setup logging
