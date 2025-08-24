@@ -1,10 +1,10 @@
 from __future__ import annotations
 import pandas as pd
 from typing import Dict, Any
-from src.state import GraphState
-from src.utils.io import read_csv_if_exists
-from src.utils.data_fetchers import fetch_open_meteo_daily, fetch_modis_ndvi_ornl
-from src import config as CFG  # <- keep this alias
+from coffee_langgraph.state import GraphState
+from coffee_langgraph.utils.io import read_csv_if_exists
+from coffee_langgraph.utils.data_fetchers import fetch_open_meteo_daily, fetch_modis_ndvi_ornl
+from coffee_langgraph import config as CFG  # <- keep this alias
 
 # Safe defaults if config module is missing some attrs
 FROST_TMIN_C = getattr(CFG, "FROST_TMIN_C", 2.0)

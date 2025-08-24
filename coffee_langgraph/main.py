@@ -6,8 +6,8 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.json import JSON
 
-from .state import GraphState
-from .graph_builder import build_graph
+from coffee_langgraph.state import GraphState
+from coffee_langgraph.graph_builder import build_graph
 
 app = typer.Typer(add_completion=False)
 console = Console()
@@ -69,8 +69,7 @@ def main(
     graph = build_graph()
     app_graph = graph.compile()
 
-    from IPython.display import Image, display
-
+    # Save graph visualization (if possible)
     try:
         image_bytes = app_graph.get_graph().draw_mermaid_png()
         
@@ -78,9 +77,9 @@ def main(
         with open("graph.png", "wb") as f:
             f.write(image_bytes)
         
-        display(Image(image_bytes))
+        console.print("[green]Graph visualization saved to graph.png[/green]")
     except Exception as e:
-        print(f"Could not generate or save image: {e}")
+        console.print(f"[yellow]Could not generate or save graph image: {e}[/yellow]")
 
     console.print(Panel.fit("[bold]Coffee LangGraph[/bold]", title="Run", border_style="green"))
 

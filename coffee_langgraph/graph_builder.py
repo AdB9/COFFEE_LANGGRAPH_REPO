@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
 
-from src.state import GraphState
-from src.agents.geospatial_agent import geospatial_agent
-from src.agents.web_news_agent import web_news_agent
-from src.agents.logistics_agent import logistics_agent
-from src.agents.data_analyst_agent import data_analyst_agent
-from src.agents.region_selector_agent import region_selector_agent
+from coffee_langgraph.state import GraphState
+from coffee_langgraph.agents.geospatial_agent import geospatial_agent
+from coffee_langgraph.agents.web_news_agent import web_news_agent
+from coffee_langgraph.agents.logistics_agent import logistics_agent
+from coffee_langgraph.agents.data_analyst_agent import data_analyst_agent
+from coffee_langgraph.agents.region_selector_agent import region_selector_agent
 
 
 def input_node(state: GraphState) -> Dict[str, Any]:

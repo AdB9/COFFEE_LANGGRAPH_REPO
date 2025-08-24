@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, Optional
-from ..state import Signal, PredictivePrice
-from .. import config
+from coffee_langgraph.state import Signal, PredictivePrice
+from coffee_langgraph import config
 
 def impact_to_score(impact: str) -> float:
     return {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}.get(impact, 0.0)
