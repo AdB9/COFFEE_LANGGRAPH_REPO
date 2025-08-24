@@ -6,3 +6,6 @@ numpy>=1.25
 python-dotenv>=1.0
 rich>=13.7
 typer>=0.12
+pandas
+requests
+lxml      # for pandas.read_html

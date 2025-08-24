@@ -1,69 +1,45 @@
 from __future__ import annotations
 import pandas as pd
 from typing import Dict, Any
-from ..state import GraphState
-from ..utils.io import read_csv_if_exists
-from .. import config
+from src.state import GraphState
+from src.utils.io import read_csv_if_exists
+from src.utils.data_fetchers import fetch_santos_arrivals_table
 
-def to_native(obj):
+
+def _to_native(o):
     try:
         import numpy as np
-        np_generic = (np.generic,)
-    except Exception:
-        np_generic = tuple()
-    if isinstance(obj, np_generic):
-        return obj.item()
-    if isinstance(obj, dict):
-        return {k: to_native(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [to_native(v) for v in obj]
-    return obj
+        if isinstance(o, np.generic): return o.item()
+    except Exception: pass
+    if isinstance(o, dict): return {k: _to_native(v) for k, v in o.items()}
+    if isinstance(o, list): return [_to_native(v) for v in o]
+    return o
 
 def logistics_agent(state: GraphState) -> Dict[str, Any]:
-    """
-    Heuristic logistics signal using CSV:
-    Columns: date,port,vessels_waiting,avg_wait_time_days,freight_index,disruptions
-    """
-    path = state.get("logistics_csv") or "data/sample/logistics_sample.csv"
-    df = read_csv_if_exists(path)
+    path = state.get("logistics_csv")
+    df = read_csv_if_exists(path) if path else fetch_santos_arrivals_table()
+
     if df is None or df.empty:
-        return {"logistics_signal": {
-            "impact": "neutral", "confidence": 0.35, "rationale": "No logistics data.", "features": {}
-        }}
+        return {"logistics_signal": {"impact":"neutral","confidence":0.4,"rationale":"No logistics data available.","features":{}}}
 
-    df["date"] = pd.to_datetime(df["date"])
-    latest_date = df["date"].max()
-    latest_df = df[df["date"] == latest_date]
+    txt = df.apply(lambda s: s.astype(str).str.lower())
+    is_container = txt.apply(lambda s: s.str.contains("conteiner|container|tecon|btp|msc|maersk", regex=True))
+    is_agri = txt.apply(lambda s: s.str.contains("cafe|coffee|acucar|sugar", regex=True))
 
-    wait_spike = bool((pd.to_numeric(latest_df["avg_wait_time_days"], errors="coerce") >= float(config.WAIT_DAYS_SPIKE)).any())
-    freight_spike = bool((pd.to_numeric(latest_df["freight_index"], errors="coerce") >= float(config.FREIGHT_INDEX_SPIKE)).any())
+    container_hits = int(is_container.any(axis=1).sum())
+    agro_hits = int(is_agri.any(axis=1).sum())
 
-    disruption_col = latest_df.get("disruptions", None)
-    has_disruption = False
-    if disruption_col is not None:
-        has_disruption = bool(disruption_col.fillna("").astype(str).str.len().gt(0).any())
+    score, bits = 0, []
+    if container_hits >= 20: score += 1; bits.append("High container arrival density at Santos.")
+    if agro_hits >= 5: score += 1; bits.append("Elevated agribulk movements near Santos.")
 
-    score = sum([wait_spike, freight_spike, has_disruption])
-    if score >= 2:
-        impact, conf = "bullish", 0.65
-        reason = "Congestion/freight/disruption elevated (supply delays)."
-    elif score == 1:
-        impact, conf = "bullish", 0.55
-        reason = "Some logistics stress indicators elevated."
-    else:
-        impact, conf = "neutral", 0.45
-        reason = "No major logistics stress."
+    if score >= 2: impact, conf = "bullish", 0.65
+    elif score == 1: impact, conf = "neutral", 0.50
+    else: impact, conf = "neutral", 0.45
 
     signal = {
-        "impact": impact,
-        "confidence": float(conf),
-        "rationale": reason,
-        "features": {
-            "latest_date": str(getattr(latest_date, "date", lambda: latest_date)()),
-            "ports": [str(p) for p in latest_df["port"].astype(str).unique().tolist()],
-            "avg_wait_time_max": float(pd.to_numeric(latest_df["avg_wait_time_days"], errors="coerce").max()),
-            "freight_index_max": float(pd.to_numeric(latest_df["freight_index"], errors="coerce").max()),
-            "disruptions_any": bool(has_disruption),
-        }
+        "impact": impact, "confidence": float(conf),
+        "rationale": " ".join(bits) or "No significant congestion signals from Santos schedule.",
+        "features": {"container_arrivals_count": int(container_hits), "agri_related_count": int(agro_hits)}
     }
-    return {"logistics_signal": to_native(signal)}
+    return {"logistics_signal": _to_native(signal)}

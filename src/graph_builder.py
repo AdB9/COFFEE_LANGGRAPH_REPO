@@ -1,11 +1,15 @@
+#graph_builder.py
 from __future__ import annotations
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
-from .state import GraphState
-from .agents.geospatial_agent import geospatial_agent
-from .agents.web_news_agent import web_news_agent
-from .agents.logistics_agent import logistics_agent
-from .agents.data_analyst_agent import data_analyst_agent
+
+from src.state import GraphState
+from src.agents.geospatial_agent import geospatial_agent
+from src.agents.web_news_agent import web_news_agent
+from src.agents.logistics_agent import logistics_agent
+from src.agents.data_analyst_agent import data_analyst_agent
+from src.agents.region_selector_agent import region_selector_agent
+
 
 def input_node(state: GraphState) -> Dict[str, Any]:
     # Pass through; could normalize inputs here
@@ -19,10 +23,15 @@ def build_graph() -> StateGraph:
     graph.add_node("web_news", web_news_agent)
     graph.add_node("logistics", logistics_agent)
     graph.add_node("data_analyst", data_analyst_agent)
-
+    graph.add_node("region_selector", region_selector_agent)
     graph.set_entry_point("input")
 
-    # Parallel fan-out from input
+    graph.add_edge("input", "region_selector")
+
+    # Make geospatial & logistics depend on it
+    graph.add_edge("region_selector", "geospatial")
+    graph.add_edge("region_selector", "logistics")
+        # Parallel fan-out from input
     graph.add_edge("input", "geospatial")
     graph.add_edge("input", "web_news")
     graph.add_edge("input", "logistics")

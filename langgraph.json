@@ -1,0 +1,12 @@
+{
+  "dependencies": [
+    "pandas",
+    "requests",
+    "lxml",
+    "./src"
+  ],
+  "graphs": {
+    "coffee": "./src/graph_builder.py:build_graph"
+  },
+  "env": "./.env"
+}
