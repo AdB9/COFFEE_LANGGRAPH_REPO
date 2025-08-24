@@ -1,10 +1,10 @@
-# Alpha Seeker - WebSearch Agent
+# Alpha Seeker
 
-A multi-agent LangGraph system for discovering alpha indicators through automated research. This project follows the same architecture patterns as the `lang_graph` reference implementation but focuses on building a simple, effective websearch agent as the foundation.
+A multi-agent LangGraph system for discovering alpha indicators through automated research.
 
 ## 🎯 Project Vision
 
-Alpha Seeker is designed to enhance time series forecasting models by automatically discovering new, high-impact features called "alpha indicators." The system identifies periods of poor model performance and conducts automated research to understand potential causes.
+Alpha Seeker is designed to enhance time series forecasting models by automatically discovering new, high-impact features called "alpha indicators" for the commodity market. The system identifies periods of poor model performance and conducts automated research to understand potential causes.
 
 ## 🏗️ Architecture
 
