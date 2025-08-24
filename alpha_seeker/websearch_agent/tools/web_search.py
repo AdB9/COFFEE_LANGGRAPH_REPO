@@ -1,15 +1,14 @@
-"""Web search tools for the Alpha Seeker websearch agent."""
+"""Web search tools for the Alpha Seeker websearch agent (Brave News)."""
 
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from datetime import datetime
 
+import aiohttp
 from dotenv import load_dotenv
-from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.tools import tool
-from langchain_google_community import GoogleSearchAPIWrapper
 
 from alpha_seeker.common.data_models import WebSearchResult, SearchResultType
 
@@ -18,25 +17,40 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SEARCH_ENGINE = "duckduckgo"
+# Use Brave by default
+DEFAULT_SEARCH_ENGINE = "brave"
 
-# Lazy load the search tool
-_search_tool: Optional[Any] = None
+# Brave News API
+BRAVE_NEWS_ENDPOINT = "https://api.search.brave.com/res/v1/news/search"
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "BSAS-XOms8-nuUsDbHO9CMq_WDrCb5z")
 
-def get_search_tool(engine: str = DEFAULT_SEARCH_ENGINE):
-    """Get or create the search tool instance."""
-    global _search_tool
-    if _search_tool is None:
-        if engine == "duckduckgo":
-            _search_tool = DuckDuckGoSearchRun()
-        else:
-            # Check if Google API key is available
-            if not os.getenv("GOOGLE_API_KEY"):
-                logger.warning("GOOGLE_API_KEY not found, falling back to DuckDuckGo")
-                _search_tool = DuckDuckGoSearchRun()
-            else:
-                _search_tool = GoogleSearchAPIWrapper()
-    return _search_tool
+
+async def _brave_news_search(query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    """Call Brave News API and return the list of news results."""
+    headers = {
+        "Accept": "application/json",
+        "X-Subscription-Token": BRAVE_API_KEY,
+    }
+    # See Brave docs for available params; 'count' caps results, 'freshness' narrows recency.
+    params = {
+        "q": query,
+        "count": max_results,
+        # Optional tuning params:
+        # "freshness": "month",  # values like: "day" | "week" | "month"
+        # "country": "US",
+        # "ui_lang": "en",
+        # "safesearch": "strict",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(BRAVE_NEWS_ENDPOINT, headers=headers, params=params) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(f"Brave API error {resp.status}: {body}")
+            data = await resp.json()
+
+    # Brave News response commonly has `results: [...]`
+    return data.get("results", []) or []
 
 
 def _classify_search_result(title: str, snippet: str, url: str) -> SearchResultType:
@@ -44,32 +58,27 @@ def _classify_search_result(title: str, snippet: str, url: str) -> SearchResultT
     title_lower = title.lower()
     snippet_lower = snippet.lower()
     url_lower = url.lower()
-    
-    # Check for news sources
+
     news_indicators = ["news", "reuters", "bloomberg", "wsj", "cnn", "bbc", "article"]
-    if any(indicator in url_lower or indicator in title_lower for indicator in news_indicators):
+    if any(ind in url_lower or ind in title_lower for ind in news_indicators):
         return SearchResultType.NEWS_ARTICLE
-    
-    # Check for research/academic sources
+
     research_indicators = ["research", "study", "academic", "journal", "paper", "arxiv", "scholar"]
-    if any(indicator in url_lower or indicator in title_lower for indicator in research_indicators):
+    if any(ind in url_lower or ind in title_lower for ind in research_indicators):
         return SearchResultType.RESEARCH_PAPER
-    
-    # Check for government sources
+
     gov_indicators = [".gov", "government", "department", "agency", "bureau", "usda", "fda"]
-    if any(indicator in url_lower for indicator in gov_indicators):
+    if any(ind in url_lower for ind in gov_indicators):
         return SearchResultType.GOVERNMENT_DATA
-    
-    # Check for market reports
+
     market_indicators = ["market", "report", "analysis", "forecast", "outlook", "commodity"]
-    if any(indicator in title_lower or indicator in snippet_lower for indicator in market_indicators):
+    if any(ind in title_lower or ind in snippet_lower for ind in market_indicators):
         return SearchResultType.MARKET_REPORT
-    
-    # Check for social media
+
     social_indicators = ["twitter", "reddit", "facebook", "linkedin", "social"]
-    if any(indicator in url_lower for indicator in social_indicators):
+    if any(ind in url_lower for ind in social_indicators):
         return SearchResultType.SOCIAL_MEDIA
-    
+
     return SearchResultType.GENERAL_WEB
 
 
@@ -77,125 +86,74 @@ def _calculate_relevance_score(title: str, snippet: str, query: str) -> float:
     """Calculate a simple relevance score based on keyword matching."""
     query_words = set(query.lower().split())
     content_words = set((title + " " + snippet).lower().split())
-    
+
     if not query_words:
         return 0.0
-    
-    # Calculate intersection ratio
+
     intersection = query_words.intersection(content_words)
     relevance = len(intersection) / len(query_words)
-    
+
     return min(relevance, 1.0)
 
 
 @tool
-async def web_search(query: str, max_results: int = 10, search_engine: str = "duckduckgo") -> Dict[str, Any]:
-    """Search the web for information related to the given query.
+async def web_search(query: str, max_results: int = 10, search_engine: str = DEFAULT_SEARCH_ENGINE) -> Dict[str, Any]:
+    """Search the web for information related to the given query using Brave News API.
 
     Args:
-        query: The search query
-        max_results: Maximum number of results to return
-        search_engine: Search engine to use ("duckduckgo" or "google")
+        query: The search query.
+        max_results: Maximum number of results to return.
+        search_engine: Only 'brave' is supported in this implementation.
 
     Returns:
-        Dictionary containing structured search results
+        Dictionary containing structured search results.
     """
     try:
-        # Perform the search
-        search_tool = get_search_tool(search_engine)
-        raw_results = search_tool.run(query)
+        if search_engine != "brave":
+            raise ValueError("Only 'brave' is supported. Pass search_engine='brave'.")
 
-        # Parse and structure results
-        search_results = []
-        if raw_results:
-            # Split by lines and try to extract meaningful information
-            lines = raw_results.split("\n")
-            current_result = {}
+        # Call Brave
+        raw_results = await _brave_news_search(query, max_results=max_results)
 
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    if current_result and "title" in current_result:
-                        # Create WebSearchResult object
-                        title = current_result.get("title", "")
-                        snippet = current_result.get("snippet", "")
-                        url = current_result.get("url", "")
-                        
-                        result = WebSearchResult(
-                            title=title,
-                            url=url,
-                            snippet=snippet,
-                            content=snippet,  # For now, snippet is our content
-                            search_type=_classify_search_result(title, snippet, url),
-                            relevance_score=_calculate_relevance_score(title, snippet, query),
-                            timestamp=datetime.now()  # We don't have actual publish time
-                        )
-                        search_results.append(result)
-                        current_result = {}
-                    continue
+        # Map Brave results to WebSearchResult
+        search_results: List[WebSearchResult] = []
+        for item in raw_results:
+            # Brave News fields (defensive defaults)
+            title = item.get("title", "") or ""
+            snippet = item.get("description", "") or ""
+            url = item.get("url", "") or ""
 
-                # Simple parsing - this could be improved
-                if line.startswith("http"):
-                    current_result["url"] = line
-                elif "title" not in current_result:
-                    current_result["title"] = line[:200]  # Limit title length
-                    current_result["snippet"] = line
-                else:
-                    current_result["snippet"] = (
-                        current_result.get("snippet", "") + " " + line
-                    )[:500]  # Limit snippet length
+            # Some results include "published" timestamps. If missing, fall back to now.
+            # Example formats can vary; keep it simple and robust.
+            published = item.get("published")
+            try:
+                timestamp = datetime.fromisoformat(published.replace("Z", "+00:00")) if published else datetime.now()
+            except Exception:
+                timestamp = datetime.now()
 
-            # Add the last result if exists
-            if current_result and "title" in current_result:
-                title = current_result.get("title", "")
-                snippet = current_result.get("snippet", "")
-                url = current_result.get("url", "")
-                
-                result = WebSearchResult(
-                    title=title,
-                    url=url,
-                    snippet=snippet,
-                    content=snippet,
-                    search_type=_classify_search_result(title, snippet, url),
-                    relevance_score=_calculate_relevance_score(title, snippet, query),
-                    timestamp=datetime.now()
-                )
-                search_results.append(result)
-
-        # If structured parsing failed, create a single result with all content
-        if not search_results and raw_results:
             result = WebSearchResult(
-                title=f"Search results for: {query}",
-                snippet=raw_results[:500],
-                url="N/A",
-                content=raw_results,
-                search_type=SearchResultType.GENERAL_WEB,
-                relevance_score=0.5,  # Default relevance
-                timestamp=datetime.now()
+                title=title[:200],
+                url=url,
+                snippet=snippet[:500],
+                content=snippet,  # Use description as lightweight content
+                search_type=_classify_search_result(title, snippet, url),
+                relevance_score=_calculate_relevance_score(title, snippet, query),
+                timestamp=timestamp,
             )
-            search_results = [result]
+            search_results.append(result)
 
-        # Limit to max_results and sort by relevance
+        # Sort & trim
         search_results.sort(key=lambda x: x.relevance_score, reverse=True)
         search_results = search_results[:max_results]
 
-        logger.info(f"Web search for '{query}' returned {len(search_results)} results")
+        logger.info(f"Brave web search for '{query}' returned {len(search_results)} results")
 
         return {
             "query": query,
-            "results": [result.model_dump() for result in search_results],
+            "results": [r.model_dump() for r in search_results],
             "num_results": len(search_results),
         }
 
-    except ImportError:
-        logger.error(
-            "Search tool not available. Install langchain-community."
-        )
-        return {
-            "error": "Web search functionality not available. Please install required dependencies.",
-            "query": query,
-            "results": [],
-        }
     except Exception as e:
         logger.error(f"Web search failed for query '{query}': {e}")
         return {"error": f"Web search failed: {str(e)}", "query": query, "results": []}
@@ -203,111 +161,102 @@ async def web_search(query: str, max_results: int = 10, search_engine: str = "du
 
 @tool
 async def multi_query_search(
-    queries: List[str], 
+    queries: List[str],
     max_results_per_query: int = 5,
-    search_engine: str = "duckduckgo"
+    search_engine: str = DEFAULT_SEARCH_ENGINE
 ) -> Dict[str, Any]:
-    """Perform multiple web searches in parallel.
-
-    Args:
-        queries: List of search queries
-        max_results_per_query: Maximum results per individual query
-        search_engine: Search engine to use
-
-    Returns:
-        Dictionary containing all search results organized by query
-    """
+    """Perform multiple web searches in parallel using Brave News API."""
     try:
-        # Run searches in parallel
+        if search_engine != "brave":
+            raise ValueError("Only 'brave' is supported. Pass search_engine='brave'.")
+
         tasks = [
             web_search.ainvoke({
-                "query": query, 
+                "query": q,
                 "max_results": max_results_per_query,
-                "search_engine": search_engine
+                "search_engine": "brave",
             })
-            for query in queries
+            for q in queries
         ]
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Organize results
-        all_results = []
-        query_results = {}
-        
+
+        all_results: List[Dict[str, Any]] = []
+        query_results: Dict[str, Any] = {}
+
         for i, result in enumerate(results):
+            q = queries[i]
             if isinstance(result, Exception):
-                logger.error(f"Search failed for query '{queries[i]}': {result}")
-                query_results[queries[i]] = {"error": str(result), "results": []}
+                logger.error(f"Search failed for query '{q}': {result}")
+                query_results[q] = {"error": str(result), "results": []}
             else:
-                query_results[queries[i]] = result
+                query_results[q] = result
                 all_results.extend(result.get("results", []))
-        
+
         return {
             "queries": queries,
             "query_results": query_results,
             "all_results": all_results,
-            "total_results": len(all_results)
+            "total_results": len(all_results),
         }
-        
+
     except Exception as e:
         logger.error(f"Multi-query search failed: {e}")
         return {
             "error": f"Multi-query search failed: {str(e)}",
             "queries": queries,
             "query_results": {},
-            "all_results": []
+            "all_results": [],
         }
 
 
 async def main():
     """Test the web search functionality."""
-    # Configure logging
     logging.basicConfig(level=logging.INFO)
 
-    # Test single search
     query = "coffee price volatility Brazil weather impact 2024"
-    print(f"Testing single search for: {query}")
+    print(f"Testing Brave News search for: {query}")
 
     result = await web_search.ainvoke({
-        "query": query, 
+        "query": query,
         "max_results": 5,
-        "search_engine": "duckduckgo"
+        "search_engine": "brave",
     })
 
     print(f"\nSingle Search Results:")
     print(f"Query: {result['query']}")
-    print(f"Number of results: {result['num_results']}")
+    print(f"Number of results: {result.get('num_results', 0)}")
 
-    if "error" in result:
+    if "error" in result and result["error"]:
         print(f"Error: {result['error']}")
     else:
-        for i, search_result in enumerate(result["results"], 1):
+        for i, search_result in enumerate(result.get("results", []), 1):
             print(f"\n{i}. {search_result.get('title', 'No title')}")
             print(f"   URL: {search_result.get('url', 'N/A')}")
             print(f"   Type: {search_result.get('search_type', 'unknown')}")
             print(f"   Relevance: {search_result.get('relevance_score', 0.0):.2f}")
             print(f"   Snippet: {search_result.get('snippet', 'No snippet')[:150]}...")
 
-    # Test multi-query search
     print(f"\n{'='*60}")
     print("Testing multi-query search...")
-    
+
     queries = [
         "coffee market trends 2024",
         "Brazil coffee harvest weather",
-        "coffee price predictions"
+        "coffee price predictions",
     ]
-    
+
     multi_result = await multi_query_search.ainvoke({
         "queries": queries,
-        "max_results_per_query": 3
+        "max_results_per_query": 3,
+        "search_engine": "brave",
     })
-    
-    print(f"Total results across all queries: {multi_result['total_results']}")
-    for query in queries:
-        query_data = multi_result["query_results"].get(query, {})
-        num_results = len(query_data.get("results", []))
-        print(f"  {query}: {num_results} results")
+
+    print(f"Total results across all queries: {multi_result.get('total_results', 0)}")
+    for q in queries:
+        qdata = multi_result["query_results"].get(q, {})
+        num = len(qdata.get("results", []))
+        print(f"  {q}: {num} results")
 
 
 if __name__ == "__main__":
