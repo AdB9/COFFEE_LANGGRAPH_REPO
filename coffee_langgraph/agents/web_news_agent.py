@@ -1,9 +1,9 @@
 from __future__ import annotations
 import pandas as pd
 from typing import Dict, Any
-from ..state import GraphState
-from ..utils.io import read_csv_if_exists
-from ..utils.data_fetchers import fetch_gdelt_docs
+from coffee_langgraph.state import GraphState
+from coffee_langgraph.utils.io import read_csv_if_exists
+from coffee_langgraph.utils.data_fetchers import fetch_gdelt_docs
 
 TERMS = [
     "coffee OR arabica OR robusta",
@@ -26,6 +26,8 @@ def _to_native(o):
 def web_news_agent(state: GraphState) -> Dict[str, Any]:
     path = state.get("news_csv")
     period_days = int(state.get("period_days", 2))
+    features = {}
+    avg_sent, total_count = 0.0, 0.0
 
     # CSV override if provided
     if path:
@@ -36,7 +38,11 @@ def web_news_agent(state: GraphState) -> Dict[str, Any]:
             latest_df = df[df["date"] == latest_date]
             total_count = float(pd.to_numeric(latest_df["count"], errors="coerce").sum())
             avg_sent = float(pd.to_numeric(latest_df.get("avg_sentiment", 0), errors="coerce").mean())
-            features = {"latest_date": str(latest_date.date()), "total_count": total_count, "avg_sentiment": avg_sent}
+            features = {
+                "latest_date": str(latest_date.date()),
+                "total_count": total_count,
+                "avg_sentiment": avg_sent,
+            }
         else:
             df = None
 
@@ -44,25 +50,49 @@ def web_news_agent(state: GraphState) -> Dict[str, Any]:
         end = pd.Timestamp.utcnow()
         start = end - pd.Timedelta(days=period_days)
         q = " ".join(TERMS)
-        gd = fetch_gdelt_docs(q, start.strftime("%Y%m%d%H%M%S"), end.strftime("%Y%m%d%H%M%S"), max_records=250)
+
+        try:
+            gd = fetch_gdelt_docs(
+                q,
+                start.strftime("%Y%m%d%H%M%S"),
+                end.strftime("%Y%m%d%H%M%S"),
+                max_records=150,   # lower to reduce 429s
+            )
+        except Exception as e:
+            gd = pd.DataFrame()
+
         if gd is None or gd.empty:
-            return {"web_news_signal": {"impact":"neutral","confidence":0.4,"rationale":"No recent relevant news.","features":{}}}
-        tone = float(gd.get("tone", pd.Series([0.0]*len(gd))).astype(float).mean())
+            # graceful fallback
+            return {
+                "web_news_signal": {
+                    "impact": "neutral",
+                    "confidence": 0.40,
+                    "rationale": "News API throttled or no recent articles; defaulting to neutral.",
+                    "features": {"latest_date": str(end.date()), "total_count": 0.0, "avg_tone": 0.0},
+                }
+            }
+
+        tone_series = gd["tone"] if "tone" in gd.columns else pd.Series([0.0] * len(gd))
+        avg_sent = float(pd.to_numeric(tone_series, errors="coerce").fillna(0).mean())
+        total_count = float(len(gd))
         features = {
             "latest_date": str(pd.to_datetime(gd["seendate"]).max().date()) if "seendate" in gd else end.strftime("%Y-%m-%d"),
-            "total_count": float(len(gd)),
-            "avg_tone": tone,
+            "total_count": total_count,
+            "avg_tone": avg_sent,
         }
-        avg_sent = tone
-        total_count = float(len(gd))
 
-    # Simple mapping: negative news tone / high volume => bullish (supply risk)
+    # Heuristic mapping
     if total_count >= 100 and avg_sent <= -0.1:
         impact, conf, reason = "bullish", 0.65, "High volume of supply-risk coverage with negative tone."
     elif total_count >= 100 and avg_sent > 0.1:
         impact, conf, reason = "bearish", 0.55, "High volume with positive tone (relief/bumper signals)."
     else:
-        impact, conf, reason = "neutral", 0.45, "Mixed/limited signals."
+        impact, conf, reason = "neutral", 0.45, "Mixed or limited signals."
 
-    signal = {"impact": impact, "confidence": float(conf), "rationale": reason, "features": features}
+    signal = {
+        "impact": impact,
+        "confidence": float(conf),
+        "rationale": reason,
+        "features": features,
+    }
     return {"web_news_signal": _to_native(signal)}

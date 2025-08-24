@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List
 import pandas as pd
-from ..state import GraphState
+from coffee_langgraph.state import GraphState
 
 
 COFFEE_REGIONS = [

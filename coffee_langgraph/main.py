@@ -6,8 +6,8 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.json import JSON
 
-from .state import GraphState
-from .graph_builder import build_graph
+from coffee_langgraph.state import GraphState
+from coffee_langgraph.graph_builder import build_graph
 
 app = typer.Typer(add_completion=False)
 console = Console()
